@@ -40,6 +40,11 @@ function dom() {
         setDynamicTooltip() { return this; }, onChange(cb) { el.addEventListener('change', () => cb(Number(el.value))); return this; } };
       fn(component); return this;
     }
+    addText(fn) {
+      const inputEl = this.el.createEl('input', { type: 'text' });
+      const component = { inputEl, setValue(value) { inputEl.value = value; return this; }, setPlaceholder(value) { inputEl.placeholder = value; return this; } };
+      fn(component); return this;
+    }
     addTextArea(fn) {
       const inputEl = this.el.createEl('textarea');
       const component = { inputEl, setValue(value) { inputEl.value = value; return this; }, setPlaceholder(value) { inputEl.placeholder = value; return this; },
@@ -77,4 +82,13 @@ async function until(predicate, label = 'condition') {
   const start = Date.now();
   while (!predicate()) { if (Date.now() - start > 10000) throw new Error(`Timed out waiting for ${label}`); await tick(); }
 }
-module.exports = { dom, load, tick, until };
+function vaultEvents() {
+  const refs = new Set();
+  return {
+    on(name, callback) { const ref = { name, callback }; refs.add(ref); return ref; },
+    offref(ref) { refs.delete(ref); },
+    emit(name, ...args) { for (const ref of [...refs]) if (ref.name === name) ref.callback(...args); },
+    listenerCount() { return refs.size; },
+  };
+}
+module.exports = { dom, load, tick, until, vaultEvents };

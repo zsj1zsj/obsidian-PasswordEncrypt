@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { dom, load, until, tick } = require('./helpers');
+const { dom, load, until, tick, vaultEvents } = require('./helpers');
 const { encryptSecret } = require('../codec.ts');
 const { hashText, findPasswordBlocks, replacePayloads } = load('rotation.ts');
 const { CHECK_TEXT } = load('passwords.ts');
@@ -15,7 +15,7 @@ async function fixture(initial, notes = [], secrets = new Map()) {
   plugin.addCommand = command => commands.push(command);
   plugin.saveData = async value => { await controls.onSave(value); writes++; disk = JSON.stringify(value); };
   plugin.app = { vault: { configDir: '.obsidian', adapter: { exists: async path => { readPaths.push(path); return disk != null; }, read: async () => disk },
-    getMarkdownFiles: () => notes, getFileByPath: path => notes.find(n => n.path === path),
+    ...vaultEvents(), getAllLoadedFiles: () => [], getMarkdownFiles: () => notes, getFileByPath: path => notes.find(n => n.path === path),
     read: async file => { await controls.onReadNote(file); return file.text; },
     process: async (file, fn) => { file.text = fn(file.text); noteWrites++; await controls.onProcess(file); } },
     secretStorage: { getSecret: id => { secretReads++; return secrets.get(id) ?? null; },

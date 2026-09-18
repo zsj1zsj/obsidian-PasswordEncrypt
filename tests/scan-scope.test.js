@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { load, dom, until } = require('./helpers');
+const { load, dom, until, vaultEvents } = require('./helpers');
 const { normalizeScanFolders, isInScanFolders } = load('scan-scope.ts');
 const { validateConfiguration } = load('config.ts');
 const { PasswordBlockIndex } = load('block-index.ts');
@@ -55,12 +55,45 @@ const wrap = value => `\`\`\`password\n${value}\n\`\`\`\n`;
   const notes = [{ path: 'Accounts/a.md', text: wrap(cipher) }, { path: 'Other/b.md', text: wrap(cipher) }];
   plugin.addSettingTab = setting => { tab = setting; };
   plugin.saveData = async value => { if (failSave) throw Error('disk failed'); disk = JSON.stringify(value); saves++; };
-  plugin.app = { vault: { adapter: { exists: async () => true, read: async () => disk }, getMarkdownFiles: () => notes,
+  plugin.app = { vault: { ...vaultEvents(), adapter: { exists: async () => true, read: async () => disk }, getMarkdownFiles: () => notes,
+    getAllLoadedFiles: () => [{ path: '/', children: [] }, { path: 'Accounts', children: [] }, { path: 'Accounts/sub', children: [] }, { path: 'Accounts/sub/third', children: [] }, { path: 'Other', children: [] }, { path: 'Empty', children: [] }, { path: 'root.md' }, { path: 'Accounts/note.md' }],
     getFileByPath: path => notes.find(note => note.path === path), read: async file => { pluginReads.push(file.path); return file.text; } },
     secretStorage: { listSecrets: () => [], getSecret: () => { throw Error('No master needed'); }, setSecret: () => { throw Error('No master needed'); } } };
   await plugin.onload(); tab.display();
+  const timeout = tab.containerEl.querySelector('input[aria-label="Automatically hide plaintext"]');
+  assert.equal(timeout.type, 'text'); assert.equal(timeout.value, '30');
+  timeout.value = '45'; timeout.dispatchEvent(new h.window.Event('change'));
+  await until(() => !timeout.disabled); assert.equal(JSON.parse(disk).autoHideSeconds, 45);
+  for (const invalid of ['', '0', '301', '12.5', 'abc']) {
+    const previousSaves = saves;
+    timeout.value = invalid; timeout.dispatchEvent(new h.window.Event('change'));
+    await until(() => !timeout.disabled);
+    assert.equal(timeout.value, '45'); assert.equal(saves, previousSaves);
+  }
   const input = tab.containerEl.querySelector('textarea'); assert.ok(input); assert.equal(input.value, '');
-  input.value = 'Accounts\nAccounts/sub\nAccounts'; input.dispatchEvent(new h.window.Event('input'));
+  assert.ok(!tab.containerEl.textContent.includes('Add scan folder'));
+  const dropdown = tab.containerEl.querySelector('[role="listbox"]');
+  const type = (value, caret = value.length) => {
+    input.value = value; input.setSelectionRange(caret, caret); input.dispatchEvent(new h.window.Event('input'));
+  };
+  const key = value => input.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }));
+  type('a'); assert.equal(dropdown.hidden, false);
+  assert.deepEqual([...dropdown.children].map(option => option.textContent), ['Accounts', 'Accounts/sub', 'Accounts/sub/third']);
+  dropdown.firstChild.click(); assert.equal(input.value, 'Accounts'); assert.equal(dropdown.hidden, true);
+  type('Accounts\nacc'); assert.deepEqual([...dropdown.children].map(option => option.textContent), ['Accounts/sub', 'Accounts/sub/third'], 'exclude the selected parent but still offer subfolders');
+  type('root'); assert.equal(dropdown.hidden, true, 'do not suggest root files');
+  type('note'); assert.equal(dropdown.hidden, true, 'do not suggest nested files');
+  type('third'); key('Enter'); assert.equal(input.value, 'Accounts/sub/third', 'complete a deeply nested folder by name');
+  type('Accounts/sub/'); assert.deepEqual([...dropdown.children].map(option => option.textContent), ['Accounts/sub', 'Accounts/sub/third']);
+  type('e'); assert.deepEqual([...dropdown.children].map(option => option.textContent), ['Empty', 'Other']);
+  key('ArrowDown'); key('Enter'); assert.equal(input.value, 'Other');
+  type('em'); key('Escape'); assert.equal(dropdown.hidden, true); assert.equal(input.value, 'em');
+  type('em'); input.dispatchEvent(new h.window.Event('blur')); assert.equal(dropdown.hidden, true);
+  type('ACC\nAccounts/sub', 3); key('Enter');
+  assert.equal(input.value, 'Accounts\nAccounts/sub', 'complete only the current line, preserving nested paths');
+  type('Accounts\nAccounts/s'); key('Enter');
+  assert.equal(input.value, 'Accounts\nAccounts/sub', 'complete a nested path before saving');
+  assert.deepEqual(plugin.settings.scanFolders, [], 'completing stages the folder until Save');
   [...tab.containerEl.querySelectorAll('button')].find(b => b.textContent === 'Save scan folders').click();
   await until(() => !plugin.isBusy); assert.deepEqual(plugin.settings.scanFolders, ['Accounts', 'Accounts/sub']);
   assert.equal(pluginReads.length, 0, 'saving scope must not activate the index');

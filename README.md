@@ -53,7 +53,7 @@ Run **Open Password Blocks** from the command palette, or use the button with th
 
 ### Choosing scan folders
 
-In plugin settings, enter **Password Blocks scan folders**, one vault-relative folder per line, and click **Save scan folders**. For example:
+In plugin settings, type a folder name or path in **Password Blocks scan folders** to see matching folders at any depth, including empty folders. Suggestions show full vault-relative paths. Click a suggestion or use the arrow keys and Enter to complete the current line; Escape dismisses the dropdown. Enter one folder per line, then click **Save scan folders**. You can also edit paths manually or remove entries. Leave the list empty to scan the whole vault. For example:
 
 ```text
 Passwords
@@ -61,6 +61,10 @@ Work/Accounts
 ```
 
 The catalog includes Markdown notes inside any listed folder and its subfolders. An empty list scans the whole vault, including notes at its root. Both `/` and `\` separators are accepted and saved as `/`; duplicate entries are removed. Overlapping parent/child folders do not produce duplicate rows. Paths are case-sensitive and matched at folder boundaries (`Work` does not match `Workshop`). Absolute paths and `.`/`..` segments are rejected. Missing folders match nothing; the plugin never falls back to a whole-vault scan because a configured folder is missing.
+
+Autocomplete accepts either separator, collapses repeated separators, and shows up to 50 matching folders. Keep typing to narrow longer result lists. When the current line already names an existing folder, Enter starts a new line unless you explicitly select a candidate with the arrow keys. Directory listings are cached while settings are open and refreshed after folder creation, deletion, or renaming.
+
+Unsaved folder edits survive settings redraws and closing/reopening settings during the plugin session. Saving disables directory editing until completion; failed saves retain the draft. A successful, explicitly confirmed configuration reload discards it, as does unloading the plugin. Inline messages identify invalid paths and missing directories by line. Missing directories can still be saved for folders awaiting sync; invalid paths cannot. If the directory list cannot be read, the settings show that the check is unavailable rather than reporting directories as missing. Reopen settings to retry.
 
 Saving refreshes an already-active catalog and removes out-of-scope results, including stale background results. It does not start a scan before the panel's first activation. Creating, moving, deleting, or renaming notes updates the catalog according to this scope. Configured paths remain literal when folders are renamed; update the setting if you want to follow a renamed folder. The panel displays its current scope, and its counts/search/filter apply only to that scope. This setting is saved in `data.json`, so configured folder names may be visible in synced configuration.
 

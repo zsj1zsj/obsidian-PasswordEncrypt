@@ -5,6 +5,13 @@
 .epb-error { color: var(--text-error); }
 .epb-input { box-sizing: border-box; width: 100%; }
 .epb-scan-folders { width: 100%; min-width: 160px; resize: vertical; }
+.epb-folder-input { position: relative; min-width: 160px; flex: 1; }
+.epb-folder-suggestions { position: absolute; top: 100%; inset-inline: 0; z-index: 10; max-height: 200px; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-primary); box-shadow: var(--shadow-s); }
+.epb-folder-suggestions [role="option"] { padding: 6px 10px; cursor: pointer; overflow-wrap: anywhere; }
+.epb-folder-suggestions [role="option"]:hover, .epb-folder-suggestions .is-selected { background: var(--background-modifier-hover); }
+.epb-folder-suggestion-hint { padding: 6px 10px; color: var(--text-muted); font-size: var(--font-ui-small); }
+.epb-folder-feedback { color: var(--text-muted); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
+.epb-folder-warning { color: var(--text-warning); }
 .encrypted-password-block button:disabled { cursor: wait; opacity: 0.7; }
 .epb-catalog { padding: 12px; overflow: auto; }
 .epb-catalog-toolbar { display: flex; flex-wrap: wrap; gap: 8px; }

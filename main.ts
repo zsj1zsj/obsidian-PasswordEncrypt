@@ -7,13 +7,24 @@ import { BlockRecord, PasswordBlockIndex } from "./block-index";
 import { PASSWORD_BLOCKS_VIEW, PasswordBlocksView } from "./panel";
 import { ConfigurationStore, ConfigState, defaults, EpbSettings } from "./config";
 import { normalizeScanFolders } from "./scan-scope";
+import { attachFolderAutocomplete } from "./folder-autocomplete";
+import { FolderDirectory } from "./folder-directory";
 export type { EpbSettings } from "./config";
 
 function message(error: unknown): string { return error instanceof Error ? error.message : "An unknown error occurred"; }
 
 class EpbSettingTab extends PluginSettingTab {
+  private folderDraft?: string;
+  private savingFolders = false;
+  private visible = false;
+  private cleanupFolders?: () => void;
   constructor(app: App, private plugin: EncryptPlugin) { super(app, plugin); }
+  hide(): void { this.visible = false; this.cleanupFolders?.(); this.cleanupFolders = undefined; }
+  dispose(): void { this.hide(); this.clearFolderDraft(); }
+  clearFolderDraft(): void { this.folderDraft = undefined; }
+  private redisplay(): void { if (this.visible) this.display(); }
   display(): void {
+    this.cleanupFolders?.(); this.cleanupFolders = undefined; this.visible = true;
     const el = this.containerEl; el.empty(); el.createEl("h2", { text: "Encrypted Password Blocks" });
     new Setting(el).setName("Password Blocks")
       .setDesc("Browse a read-only catalog of encrypted blocks, locations, and key references. No passwords are decrypted.")
@@ -23,34 +34,64 @@ class EpbSettingTab extends PluginSettingTab {
     if (this.plugin.configurationState !== "ready") {
       el.createEl("p", { text: "Writing is disabled. You can browse Password Blocks and reveal existing blocks by entering the original master password. No stored passwords are read or saved. Restore data.json before retrying; there is no automatic reset or merge." });
       new Setting(el).addButton(b => b.setButtonText(this.plugin.configurationState === "conflict" ? "Reload configuration" : "Retry loading configuration").onClick(async () => {
-        b.setDisabled(true); try { await this.plugin.reloadConfiguration(); } finally { this.display(); }
+        b.setDisabled(true); try { await this.plugin.reloadConfiguration(); } finally { this.redisplay(); }
       }));
       new Setting(el).addButton(b => b.setButtonText("Lock").onClick(() => this.plugin.lock()));
       return;
     }
-    let folderInput = this.plugin.settings.scanFolders.join("\n");
+    const savedFolders = this.plugin.settings.scanFolders.join("\n");
+    let folderInput = this.folderDraft ?? savedFolders;
+    let folderInputEl!: HTMLTextAreaElement;
+    let updateFeedback = () => {};
+    let refreshAutocomplete = () => {};
+    const directory = new FolderDirectory(this.app.vault, () => { updateFeedback(); refreshAutocomplete(); });
+    let disposeAutocomplete = () => {};
+    this.cleanupFolders = () => { directory.dispose(); disposeAutocomplete(); };
     new Setting(el).setName("Password Blocks scan folders")
-      .setDesc("One vault-relative folder per line, including subfolders. Leave empty for the whole vault. Paths are case-sensitive; missing folders match nothing. This only limits the catalog. Master-password safety checks and migration still cover the whole vault.")
+      .setDesc("One vault-relative folder per line, including subfolders. Type to autocomplete any folder or subfolder by name or path; use arrow keys and Enter, or click a suggestion. Leave empty for the whole vault. Paths are case-sensitive; missing folders match nothing. This only limits the catalog. Master-password safety checks and migration still cover the whole vault.")
       .addTextArea(text => {
-        text.setPlaceholder("Passwords\nWork/Accounts").setValue(folderInput).onChange(value => { folderInput = value; });
+        text.setPlaceholder("Passwords\nWork/Accounts").setValue(folderInput).onChange(value => {
+          folderInput = value; this.folderDraft = value === savedFolders ? undefined : value; updateFeedback();
+        });
+        folderInputEl = text.inputEl; folderInputEl.disabled = this.savingFolders;
         text.inputEl.rows = 4; text.inputEl.classList.add("epb-scan-folders"); text.inputEl.setAttribute("aria-label", "Password Blocks scan folders");
+        const autocomplete = attachFolderAutocomplete(text.inputEl, () => directory.paths());
+        disposeAutocomplete = () => autocomplete.dispose(); refreshAutocomplete = () => autocomplete.refresh();
       })
-      .addButton(button => button.setButtonText("Save scan folders").onClick(async () => {
-        button.setDisabled(true);
-        try { await this.plugin.setScanFolders(folderInput.split(/\r?\n/)); new Notice("Scan folders saved. The catalog now uses the updated scope."); this.display(); }
+      .addButton(button => button.setButtonText("Save scan folders").setDisabled(this.savingFolders).onClick(async () => {
+        if (this.savingFolders) return;
+        this.savingFolders = true; button.setDisabled(true); folderInputEl.disabled = true;
+        // Preserve the submitted text even if a failed save switches to recovery mode.
+        this.folderDraft = folderInput;
+        try { await this.plugin.setScanFolders(folderInput.split(/\r?\n/)); this.clearFolderDraft(); new Notice("Scan folders saved. The catalog now uses the updated scope."); }
         catch (error) { new Notice(message(error)); }
-        finally { button.setDisabled(false); }
+        finally { this.savingFolders = false; button.setDisabled(false); folderInputEl.disabled = false; this.redisplay(); }
       }));
+    const feedback = el.createEl("div", { cls: "epb-folder-feedback", attr: { "aria-live": "polite" } });
+    updateFeedback = () => {
+      feedback.empty();
+      if (this.folderDraft !== undefined) feedback.createEl("p", { text: "Unsaved changes" });
+      const paths = directory.paths();
+      const present = paths === null ? null : new Set(paths);
+      if (!present) feedback.createEl("p", { text: "Cannot check folders. Reopen settings to retry. You can still save valid paths." });
+      folderInput.split(/\r?\n/).forEach((line, index) => {
+        try {
+          const [path] = normalizeScanFolders([line]);
+          if (path && present && !present.has(path)) feedback.createEl("p", { text: `Line ${index + 1}: Folder not found: ${path}. You can still save it.`, cls: "epb-folder-warning" });
+        } catch { feedback.createEl("p", { text: `Line ${index + 1}: Invalid vault-relative folder path. Remove absolute paths, control characters, and . or .. segments before saving.`, cls: "epb-error" }); }
+      });
+    };
+    updateFeedback();
     const record = this.plugin.settings.migration;
     new Setting(el).setName("Migration record")
       .setDesc(record ? `Latest record: ${record.state}; ${record.notes.length} notes; ${record.notes.reduce((sum, note) => sum + note.blocks.length, 0)} blocks; target key ${record.targetKeyId}; ${new TextEncoder().encode(JSON.stringify(record)).length} bytes. Only the latest record is retained.` : "No migration record is retained.")
       .addButton(b => b.setButtonText("Clear completed migration record").setDisabled(!record || record.state !== "complete" || record.notes.some(n => !n.done) || this.plugin.isBusy)
-        .onClick(async () => { b.setDisabled(true); try { await this.plugin.clearCompletedMigration(); } finally { this.display(); } }));
+        .onClick(async () => { b.setDisabled(true); try { await this.plugin.clearCompletedMigration(); } finally { this.redisplay(); } }));
     new Setting(el).setName("Master password storage")
       .setDesc("Switching modes preserves old secrets. Prompt mode never reads stored passwords automatically. Session mode forgets passwords on Lock or exit.")
       .addDropdown(d => d.addOptions({ "secret-storage": "SecretStorage", session: "Remember for this session", prompt: "Ask every time" })
         .setValue(this.plugin.settings.storageMode).onChange(async mode => {
-          try { await this.plugin.setStorageMode(mode as StorageMode); } catch (e) { new Notice(message(e)); } finally { this.display(); }
+          try { await this.plugin.setStorageMode(mode as StorageMode); } catch (e) { new Notice(message(e)); } finally { this.redisplay(); }
         }));
     new Setting(el).setName("Master password")
       .setDesc("Scan this vault before changing the password. You can re-encrypt existing blocks or use the new password for new blocks only.")
@@ -71,10 +112,21 @@ class EpbSettingTab extends PluginSettingTab {
         try { await this.plugin.setNumericSetting("parity", n); } catch (e) { new Notice(message(e)); }
       }));
     new Setting(el).setName("Automatically hide plaintext")
-      .setDesc("Seconds before plaintext is hidden. Losing window focus also hides it without clearing session passwords.")
-      .addSlider(s => s.setLimits(10, 300, 10).setValue(this.plugin.settings.autoHideSeconds).setDynamicTooltip().onChange(async n => {
-        try { await this.plugin.setNumericSetting("autoHideSeconds", n); } catch (e) { new Notice(message(e)); }
-      }));
+      .setDesc("Seconds before plaintext is hidden (10–300; default 30). Saved when you leave the field. Losing window focus also hides it without clearing session passwords.")
+      .addText(text => {
+        text.setPlaceholder("30").setValue(String(this.plugin.settings.autoHideSeconds));
+        text.inputEl.setAttribute("inputmode", "numeric");
+        text.inputEl.setAttribute("aria-label", "Automatically hide plaintext");
+        text.inputEl.addEventListener("change", async () => {
+          const value = text.inputEl.value.trim();
+          text.inputEl.disabled = true;
+          try {
+            if (!/^\d+$/.test(value) || Number(value) < 10 || Number(value) > 300) throw new Error("Enter a whole number of seconds from 10 to 300.");
+            await this.plugin.setNumericSetting("autoHideSeconds", Number(value));
+          } catch (error) { new Notice(message(error)); }
+          finally { text.setValue(String(this.plugin.settings.autoHideSeconds)); text.inputEl.disabled = false; }
+        });
+      });
     el.createEl("p", { text: "Missing a stored secret? Reveal offers recovery with your original master password. Changing secrets directly in Obsidian bypasses this plugin's migration checks. Historical copies still need their original passwords." });
   }
 }
@@ -131,6 +183,7 @@ export default class EncryptPlugin extends Plugin {
     });
   }
   onunload(): void {
+    this.settingTab?.dispose();
     this.stopped = true; this.lock();
     this.config?.dispose();
     this.blockIndex?.dispose();
@@ -281,7 +334,7 @@ export default class EncryptPlugin extends Plugin {
       await this.loadSettings();
       if (this.stopped) return;
       this.createPasswordManager(); this.blockIndex?.refresh();
-      if (this.configurationState === "ready") new Notice("Configuration reloaded. Previous password operations remain cancelled.");
+      if (this.configurationState === "ready") { this.settingTab?.clearFolderDraft(); new Notice("Configuration reloaded. Previous password operations remain cancelled."); }
     } finally { this.reloading = false; this.refreshSettingsView(); }
   }
   async clearCompletedMigration(): Promise<void> {
