@@ -1,0 +1,24 @@
+{
+  "name": "obsidian-encrypt",
+  "version": "0.7.0",
+  "description": "Encrypted password blocks for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "dev": "esbuild main.ts --bundle --external:obsidian --external:electron --format=cjs --target=es2018 --outfile=main.js --sourcemap",
+    "build": "tsc --noEmit && esbuild main.ts --bundle --external:obsidian --external:electron --format=cjs --target=es2018 --outfile=main.js --minify",
+    "test": "node tests/codec.test.js && node tests/rotation.test.js && node tests/passwords.test.js && node tests/ui.test.js && node tests/plugin.test.js && node tests/block-index.test.js && node tests/panel.test.js && node tests/config.test.js && node tests/config-plugin.test.js && node tests/scan-scope.test.js"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^30.0.0",
+    "@types/markdown-it": "^14.2.0",
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.24.2",
+    "jsdom": "^30.1.0",
+    "obsidian": "^1.7.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "markdown-it": "^15.0.2",
+    "reedsolomon.ts": "^1.0.0"
+  }
+}

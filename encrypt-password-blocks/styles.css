@@ -1,0 +1,20 @@
+.encrypted-password-block { border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 10px 12px; background: var(--background-secondary); }
+.encrypted-password-block .epb-title { font-weight: 600; margin-bottom: 8px; }
+.encrypted-password-block .epb-status { color: var(--text-muted); margin-left: 8px; font-size: var(--font-ui-small); }
+.encrypted-password-block .epb-secret { margin-top: 10px; padding: 8px; border-radius: 5px; background: var(--background-primary); font-family: var(--font-monospace); white-space: pre-wrap; word-break: break-word; user-select: text; }
+.epb-error { color: var(--text-error); }
+.epb-input { box-sizing: border-box; width: 100%; }
+.epb-scan-folders { width: 100%; min-width: 160px; resize: vertical; }
+.encrypted-password-block button:disabled { cursor: wait; opacity: 0.7; }
+.epb-catalog { padding: 12px; overflow: auto; }
+.epb-catalog-toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
+.epb-catalog-toolbar input { flex: 1 1 180px; min-width: 0; }
+.epb-catalog-summary { font-weight: 600; }
+.epb-catalog-hint { color: var(--text-muted); font-size: var(--font-ui-small); }
+.epb-catalog-note { margin-block: 16px; }
+.epb-catalog-note h3 { overflow-wrap: anywhere; font-size: var(--font-ui-small); }
+.epb-catalog-block { border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 10px; margin-block: 8px; }
+.epb-catalog-block p { margin-block: 6px; overflow-wrap: anywhere; }
+.epb-catalog-block code { display: block; overflow-wrap: anywhere; user-select: text; }
+.epb-catalog-block summary { cursor: pointer; color: var(--text-muted); }
+.epb-catalog-block button { height: auto; white-space: normal; text-align: start; }
