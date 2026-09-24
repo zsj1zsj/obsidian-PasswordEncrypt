@@ -148,6 +148,23 @@ Generated bundles, the local `encrypt-password-blocks/` installation copy, and `
 
 Tests cover encryption and size limits, nested Markdown, password recovery/modes, DOM button and timer behavior, legacy settings migration, persistence failures, migration restart recovery, lazy indexing, debounce and stale-read races, folder/extension changes, metadata-only storage, secret-name-only inspection, safe duplicate navigation, and catalog search/filter/grouping and plugin wiring. Configuration tests simulate invalid JSON/fields, external edits/deletion, own-save notifications, queued and in-flight conflicts, guarded reload, manual-only recovery, migration checkpoints, and completed-record cleanup. DOM tests emulate Obsidian's modal/setting/view shell; they do not replace manual validation in the real desktop/mobile app or actual OneDrive concurrency tests.
 
+## Automated builds and releases
+
+The **Build and release plugin** GitHub Actions workflow runs for pushes to `main`, pull requests targeting `main`, numeric version-tag pushes, and manual **Run workflow** requests. It uses Node.js 22.23.2 and `npm ci`, checks version consistency, runs the regression tests, and type-checks/builds the plugin.
+
+Each successful build provides an `encrypt-password-blocks-<commit SHA>` artifact under the workflow run's **Artifacts** section, retained for 14 days. Download and extract it to get exactly `main.js`, `manifest.json`, and `styles.css`, then copy them into `.obsidian/plugins/encrypt-password-blocks/`. Dependencies, source files, source maps, and local settings are not included.
+
+Only pushing a version tag publishes a GitHub Release, with the same three files attached individually and automatically generated release notes. Branch pushes, pull requests, and manual runs never publish a release. The tag must exactly match the version in `manifest.json`, `package.json`, and both root version fields in `package-lock.json`. Use a bare `x.y.z` tag, without `v`, as required by the [Obsidian release format](https://github.com/obsidianmd/obsidian-sample-plugin#releasing-new-releases).
+
+For a new version, update `manifest.json` and run `npm version <version> --no-git-tag-version` to update `package.json` and `package-lock.json`. Commit and push those changes first, then create and push the matching tag. For example, if the committed version is `0.7.0` and that tag has not already been used:
+
+```bash
+git tag 0.7.0
+git push origin 0.7.0
+```
+
+The workflow must be committed and pushed before tagging the release commit. No personal access token or extra secret is needed: only the release job requests `contents: write` from the built-in `GITHUB_TOKEN`; build jobs remain read-only. Repository/organization Actions policies must permit these actions and release writes. Existing releases/assets are not overwritten; use a new version for changes to a published release.
+
 ### 0.7.0
 
 Adds multiple vault-relative scan folders for the Password Blocks catalog, immediate scope refresh, and folder-scope validation and regression tests. Empty configuration retains whole-vault catalog scanning. Master-password safety scans and migrations remain whole-vault. Minimum Obsidian version and ciphertext formats are unchanged.

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "esbuild main.ts --bundle --external:obsidian --external:electron --format=cjs --target=es2018 --outfile=main.js --sourcemap",
     "build": "tsc --noEmit && esbuild main.ts --bundle --external:obsidian --external:electron --format=cjs --target=es2018 --outfile=main.js --minify",
-    "test": "node tests/codec.test.js && node tests/rotation.test.js && node tests/block-title.test.js && node tests/block-render-cache.test.js && node tests/passwords.test.js && node tests/ui.test.js && node tests/block-actions.test.js && node tests/plugin.test.js && node tests/block-index.test.js && node tests/panel.test.js && node tests/config.test.js && node tests/config-plugin.test.js && node tests/scan-scope.test.js && node tests/folder-settings.test.js"
+    "test": "node tests/release.test.js && node tests/codec.test.js && node tests/rotation.test.js && node tests/block-title.test.js && node tests/block-render-cache.test.js && node tests/passwords.test.js && node tests/ui.test.js && node tests/block-actions.test.js && node tests/plugin.test.js && node tests/block-index.test.js && node tests/panel.test.js && node tests/config.test.js && node tests/config-plugin.test.js && node tests/scan-scope.test.js && node tests/folder-settings.test.js"
   },
   "devDependencies": {
     "@types/jsdom": "^30.0.0",
