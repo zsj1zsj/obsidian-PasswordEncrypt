@@ -1,9 +1,0 @@
-{
-  "id": "encrypt-password-blocks",
-  "name": "Encrypted Password Blocks",
-  "version": "0.7.0",
-  "minAppVersion": "1.11.4",
-  "description": "Store passwords as authenticated encrypted blocks with optional Reed-Solomon repair.",
-  "author": "Local",
-  "isDesktopOnly": false
-}

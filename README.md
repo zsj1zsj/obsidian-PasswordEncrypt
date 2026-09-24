@@ -140,6 +140,8 @@ npm test
 
 Copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/encrypt-password-blocks/` in the vault, then reload Obsidian.
 
+Generated bundles, the local `encrypt-password-blocks/` installation copy, and `node_modules/` are not tracked. Keep `package-lock.json`, root `manifest.json` and `styles.css`, source files, and hand-written test scripts in Git. Build before installing; local plugin settings (`data.json`) and environment values must stay out of commits.
+
 Tests cover encryption and size limits, nested Markdown, password recovery/modes, DOM button and timer behavior, legacy settings migration, persistence failures, migration restart recovery, lazy indexing, debounce and stale-read races, folder/extension changes, metadata-only storage, secret-name-only inspection, safe duplicate navigation, and catalog search/filter/grouping and plugin wiring. Configuration tests simulate invalid JSON/fields, external edits/deletion, own-save notifications, queued and in-flight conflicts, guarded reload, manual-only recovery, migration checkpoints, and completed-record cleanup. DOM tests emulate Obsidian's modal/setting/view shell; they do not replace manual validation in the real desktop/mobile app or actual OneDrive concurrency tests.
 
 ### 0.7.0

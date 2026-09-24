@@ -1,3 +1,28 @@
-# Generated plugin bundles
+# Installed dependencies (keep package-lock.json tracked)
+node_modules/
+
+# Generated plugin bundles and local installation copies
 /main.js
-/encrypt-password-blocks/main.js
+/main.js.map
+/encrypt-password-blocks/
+*.tsbuildinfo
+
+# Local caches, coverage, and npm logs
+/.cache/
+/coverage/
+/.nyc_output/
+npm-debug.log*
+
+# Local Obsidian settings and environment values
+/data.json
+/.obsidian/
+/.env
+/.env.*
+!/.env.example
+
+# Operating-system and editor temporary files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
