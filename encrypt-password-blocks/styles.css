@@ -1,6 +1,7 @@
 .encrypted-password-block { border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 10px 12px; background: var(--background-secondary); }
-.encrypted-password-block .epb-title { font-weight: 600; margin-bottom: 8px; }
-.encrypted-password-block .epb-status { color: var(--text-muted); margin-left: 8px; font-size: var(--font-ui-small); }
+.encrypted-password-block .epb-title { font-weight: 600; margin-bottom: 8px; overflow-wrap: anywhere; }
+.encrypted-password-block .epb-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.encrypted-password-block .epb-status { color: var(--text-muted); font-size: var(--font-ui-small); }
 .encrypted-password-block .epb-secret { margin-top: 10px; padding: 8px; border-radius: 5px; background: var(--background-primary); font-family: var(--font-monospace); white-space: pre-wrap; word-break: break-word; user-select: text; }
 .epb-error { color: var(--text-error); }
 .epb-input { box-sizing: border-box; width: 100%; }

@@ -6,8 +6,11 @@ Store passwords in Obsidian notes as authenticated ciphertext with error-correct
 
 1. Open **Settings → Community plugins → Encrypted Password Blocks** and select **Change master password** to configure a master password.
 2. Run **Insert encrypted password block** from the command palette.
-3. Enter the password you want to store. The plugin inserts an `EPB2` ciphertext block at the cursor.
-4. In Reading view, select **Reveal password** to show the plaintext temporarily. It is hidden automatically after 30 seconds by default.
+3. Enter the password you want to store, then accept or change the prefilled block title (**Encrypted password**). The plugin inserts an `EPB2` ciphertext block at the cursor.
+4. In Reading view, select **Copy password** to decrypt directly to the clipboard, or **Reveal password** to show the plaintext temporarily. Revealed text is hidden automatically after 30 seconds by default. Copy uses the same master-password and recovery flow as Reveal; it does not display the password. Hiding or locking does not clear an already copied password from the system clipboard.
+5. Select **Edit title** on a block to change its title. The dialog starts with the current title; a blank title uses **Encrypted password**. Changing a title preserves the encrypted password.
+
+Titles are plain text stored after `password` on the opening fence (for example, `password Work email`). Use a single line without backticks. Titles are visible in the note source and are not encrypted; use them as labels. Existing blocks without a title keep the default title. Title changes are unavailable while configuration writes are protected or an unfinished migration includes that note.
 
 Choose a storage mode in the settings. Existing users continue to use **SecretStorage** by default. User interface text and documentation are in English; passwords may contain Unicode text.
 

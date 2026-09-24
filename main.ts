@@ -1,8 +1,9 @@
 import { App, Editor, MarkdownPostProcessorContext, MarkdownRenderChild, normalizePath, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { decryptSecret, encryptSecret, inspectEnvelope } from "./codec";
 import { Cancelled, PasswordManager, randomKeyId, StorageMode } from "./passwords";
-import { findPasswordBlocks, hashText, MigrationTask, replacePayloads, ScannedNote, validateTask, writeMigration } from "./rotation";
-import { choose, ProgressModal, promptValue, RevealController } from "./ui";
+import { findPasswordBlocks, hashText, MigrationTask, replacePayloads, scanPasswordBlocks, ScannedNote, validateTask, writeMigration } from "./rotation";
+import { choose, ProgressModal, promptValue, RevealController, ValueOptions } from "./ui";
+import { DEFAULT_BLOCK_TITLE, formatBlockTitle, normalizeBlockTitle, replaceBlockTitle } from "./block-title";
 import { BlockRecord, PasswordBlockIndex } from "./block-index";
 import { PASSWORD_BLOCKS_VIEW, PasswordBlocksView } from "./panel";
 import { ConfigurationStore, ConfigState, defaults, EpbSettings } from "./config";
@@ -237,7 +238,7 @@ export default class EncryptPlugin extends Plugin {
   get configurationState(): ConfigState { return this.config?.state ?? "recovery"; }
   get configurationDiagnostic(): string { return this.config?.diagnostic ?? "Configuration is unavailable."; }
   get isBusy(): boolean { return !!(this.activeOperations || this.reloading || this.rotating); }
-  private prompt(title: string): Promise<string | null> { return promptValue(this.app, title, this.operationAbort.signal); }
+  private prompt(title: string, options?: ValueOptions): Promise<string | null> { return promptValue(this.app, title, this.operationAbort.signal, options); }
   private choose(title: string, text: string, options: string[]): Promise<string | null> { return choose(this.app, title, text, options, this.operationAbort.signal); }
   private endOperation(): void {
     this.activeOperations--;
@@ -495,11 +496,14 @@ export default class EncryptPlugin extends Plugin {
       const cursor = editor.getCursor(); const snapshot = editor.getValue();
       const secret = await this.prompt("Enter the password to encrypt"); this.assertRunning(epoch);
       if (secret === null) return;
+      const title = await this.prompt("Block title", { type: "text", defaultValue: DEFAULT_BLOCK_TITLE }); this.assertRunning(epoch);
+      if (title === null) return;
+      const titleInfo = formatBlockTitle(title);
       const active = await this.passwords.active(); this.assertRunning(epoch);
       const cipher = await encryptSecret(secret, active.master, this.settings.parity, active.keyId); this.assertRunning(epoch);
       await this.ensureWritable(epoch);
       if (this.rotating || editor.getValue() !== snapshot) throw new Error("The note changed. Please insert the block again.");
-      editor.replaceRange(`\n\`\`\`password\n${cipher}\n\`\`\`\n`, cursor);
+      editor.replaceRange(`\n\`\`\`password${titleInfo}\n${cipher}\n\`\`\`\n`, cursor);
       new Notice("Inserted an encrypted password block");
     } catch (e) { if (!(e instanceof Cancelled)) new Notice(message(e)); }
     finally { this.endOperation(); }
@@ -518,8 +522,50 @@ export default class EncryptPlugin extends Plugin {
       const plain = await decryptSecret(source, master); this.assertRunning(epoch); return plain;
     } finally { this.endOperation(); }
   }
+  private blockSection(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext) {
+    const section = ctx.getSectionInfo(el);
+    if (!section) return null;
+    const candidates = scanPasswordBlocks(section.text, ctx.sourcePath).blocks.filter(block =>
+      block.source === source.trim() && block.line - 1 >= section.lineStart && block.line - 1 <= section.lineEnd);
+    const block = candidates.length === 1 ? candidates[0] : undefined;
+    return block ? { text: section.text, block } : null;
+  }
+  private async renameBlock(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext): Promise<string | null> {
+    if (this.isBusy) throw new Error("Finish the current operation first.");
+    const epoch = this.operationEpoch;
+    this.activeOperations++;
+    try {
+      await this.ensureWritable(epoch);
+      const section = this.blockSection(source, el, ctx);
+      if (!section) throw new Error("Cannot locate this block safely. Reopen the note and try again.");
+      const file = this.file(ctx.sourcePath);
+      const path = file.path;
+      const migration = this.settings.migration;
+      if (migration && migration.state !== "complete" && migration.notes.some(note => note.path === path)) {
+        throw new Error("Resume the unfinished migration before editing a title in this note.");
+      }
+      const snapshot = await this.app.vault.read(file); this.assertRunning(epoch);
+      if (snapshot !== section.text) throw new Error("The note changed. Reopen the note and try again.");
+      const value = await this.prompt("Edit block title", { type: "text", defaultValue: section.block.title }); this.assertRunning(epoch);
+      if (value === null) return null;
+      const title = normalizeBlockTitle(value);
+      if (title === section.block.title) return title;
+      const next = replaceBlockTitle(snapshot, section.block, title);
+      await this.ensureWritable(epoch);
+      await this.app.vault.process(file, current => {
+        this.assertRunning(epoch); this.assertWritable();
+        if (file.path !== path || this.file(path) !== file || current !== snapshot) throw new Error("The note changed. Please edit the title again.");
+        return next;
+      });
+      return title;
+    } finally { this.endOperation(); }
+  }
   private renderBlock(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
-    const view = new RevealController(el, () => this.revealPassword(source), () => this.configurationState === "ready" ? this.settings.autoHideSeconds : 30);
+    const section = this.blockSection(source, el, ctx);
+    const view = new RevealController(el, () => this.revealPassword(source), () => this.configurationState === "ready" ? this.settings.autoHideSeconds : 30, {
+      title: section?.block.title ?? DEFAULT_BLOCK_TITLE,
+      rename: () => this.renameBlock(source, el, ctx),
+    });
     this.views.add(view);
     const views = this.views;
     ctx.addChild(new class extends MarkdownRenderChild {

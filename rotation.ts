@@ -1,9 +1,10 @@
 import MarkdownIt from "markdown-it";
 import { inspectEnvelope } from "./codec";
+import { DEFAULT_BLOCK_TITLE } from "./block-title";
 
 export interface Fragment { start: number; end: number }
 export interface PasswordBlock { fragments: Fragment[]; source: string; line: number }
-export interface IndexedPasswordBlock extends PasswordBlock { endLine: number; ordinal: number }
+export interface IndexedPasswordBlock extends PasswordBlock { endLine: number; ordinal: number; title: string; titleFragment: Fragment }
 export interface BlockDiagnostic { line?: number; endLine?: number; ordinal?: number; message: string }
 export interface ScannedNote { path: string; beforeHash: string; blocks: PasswordBlock[] }
 export interface MigrationNote extends ScannedNote { afterHash: string; replacements: string[]; done: boolean }
@@ -30,6 +31,18 @@ export function scanPasswordBlocks(text: string, path = "Note"): { blocks: Index
     const currentOrdinal = ordinal++;
     try {
       const fail = (message: string): never => { throw new Error(`${path}:${first + 1}: ${message}`); };
+      const opening = lines[first];
+      const openingText = opening?.[0].replace(/\r?\n$/, "") ?? "";
+      const language = /^\s*password(?=\s|$)/.exec(token.info);
+      // The token's info is the complete suffix after the opening fence, even in
+      // lists and blockquotes. Locate it from the end so titles can repeat words
+      // or fence-like text without making the source range ambiguous.
+      if (!opening || !language || !openingText.replace(/\0/g, "\ufffd").endsWith(token.markup + token.info)) fail("Cannot safely locate the block title");
+      const titleFragment = {
+        start: opening.index! + openingText.length - token.info.length + language![0].length,
+        end: opening.index! + openingText.length,
+      };
+      const title = token.info.slice(language![0].length).trim() || DEFAULT_BLOCK_TITLE;
       const contentLines = token.content.replace(/\n$/, "").split("\n");
       // An explicit closing fence must occupy a separate final source line.
       const close = lines[end - 1]?.[0].replace(/\r?\n$/, "") ?? "";
@@ -49,7 +62,7 @@ export function scanPasswordBlocks(text: string, path = "Note"): { blocks: Index
         fragments.push({ start: original.index! + offset, end: original.index! + offset + content.length });
       }
       if (!fragments.length) fail("Empty password payload");
-      blocks.push({ source, fragments, line: first + 1, endLine: end, ordinal: currentOrdinal });
+      blocks.push({ source, fragments, line: first + 1, endLine: end, ordinal: currentOrdinal, title, titleFragment });
     } catch (error) {
       diagnostics.push({ line: first + 1, endLine: end, ordinal: currentOrdinal, message: error instanceof Error ? error.message : `${path}:${first + 1}: Cannot scan password block` });
     }
