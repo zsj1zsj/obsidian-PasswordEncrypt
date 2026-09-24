@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { dom, load, tick } = require('./helpers');
 const { encryptSecret, decryptSecret, inspectEnvelope } = require('../codec.ts');
+const { CHECK_TEXT } = load('passwords.ts');
 const copy = value => JSON.parse(JSON.stringify(value));
 
 async function fixture(initial, notes, secrets = new Map()) {
@@ -97,7 +98,42 @@ function dispose(f) { f.plugin.onunload(); f.instance.window.close(); }
   assert.equal(f.disk().activeKeyId, key); assert.equal(f.secrets.size, 2); dispose(f);
 
   f = await fixture({ masterPassword: 'legacy-test' }, [], new Map());
-  assert.equal(f.disk().masterPassword, undefined); assert.equal(f.secrets.size, 1); assert.ok(f.disk().legacyKeyId); dispose(f);
+  assert.equal(f.disk().masterPassword, undefined); assert.equal(f.secrets.size, 1); assert.ok(f.disk().legacyKeyId);
+  assert.equal(await decryptSecret(f.disk().keyChecks[f.disk().activeKeyId], 'legacy-test'), CHECK_TEXT);
+  await f.plugin.setStorageMode('prompt');
+  await assert.rejects(() => drive(f, f.plugin.passwords.active(), ['legacy-typo']));
+  let active;
+  await drive(f, f.plugin.passwords.active().then(value => { active = value; }), ['legacy-test']);
+  assert.equal(active.master, 'legacy-test'); dispose(f);
+
+  // Already-upgraded configurations backfill checks only after authenticating an
+  // existing block, even if it is outside the catalog's selected folders.
+  notes = [{ path: 'unavailable.md', text: '' }, { path: 'broken.md', text: '```password\nnot-an-envelope\n```\n' }, { path: 'Outside/old.md', text: wrap(old) }];
+  f = await fixture({ ...initial, storageMode: 'prompt', scanFolders: ['CatalogOnly'] }, notes);
+  f.plugin.app.secretStorage.getSecret = () => { throw Error('Prompt mode must not read SecretStorage'); };
+  const readForVerification = f.plugin.app.vault.read;
+  f.plugin.app.vault.read = async file => { if (file.path === 'unavailable.md') throw Error('unavailable note'); return readForVerification(file); };
+  await assert.rejects(() => drive(f, f.plugin.passwords.active(), ['typo-master']), /could not decrypt/);
+  assert.equal(f.saves.length, 0); assert.equal(f.writes(), 0); assert.deepEqual(f.disk().keyChecks ?? {}, {});
+  await drive(f, f.plugin.passwords.active().then(value => { active = value; }), ['old-master']);
+  assert.equal(active.keyId, 'old-key'); assert.equal(active.master, 'old-master');
+  assert.equal(await decryptSecret(f.disk().keyChecks['old-key'], 'old-master'), CHECK_TEXT);
+  assert.equal(f.writes(), 0); assert.equal(f.secrets.size, 0);
+  const verifiedLegacy = f.disk(); dispose(f);
+  f = await fixture(verifiedLegacy, notes);
+  f.plugin.app.vault.read = async () => { throw Error('A saved check should avoid rescanning notes'); };
+  await assert.rejects(() => drive(f, f.plugin.passwords.active(), ['another-typo']));
+  await drive(f, f.plugin.passwords.active().then(value => { active = value; }), ['old-master']);
+  assert.equal(active.master, 'old-master'); dispose(f);
+
+  f = await fixture({ ...initial, storageMode: 'prompt' }, []);
+  await assert.rejects(() => drive(f, f.plugin.passwords.active(), ['unchecked']), /No existing block/);
+  assert.equal(f.saves.length, 0); assert.equal(f.secrets.size, 0); dispose(f);
+
+  f = await fixture({ ...initial, storageMode: 'prompt' }, [{ path: 'unavailable.md', text: '' }]);
+  f.plugin.app.vault.read = async () => { throw Error('unavailable note'); };
+  await assert.rejects(() => drive(f, f.plugin.passwords.active(), ['unchecked']), /notes could not be read/);
+  assert.equal(f.saves.length, 0); assert.equal(f.secrets.size, 0); dispose(f);
   // A load-time save failure must leave the old on-disk master field available for retry.
   const h = dom(); const Plugin = load('main.ts', h.obsidian).default; const p = new Plugin();
   const raw = { masterPassword: 'legacy-test' }; const store = new Map();

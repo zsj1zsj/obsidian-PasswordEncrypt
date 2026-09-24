@@ -22,6 +22,7 @@
 .epb-catalog-note { margin-block: 16px; }
 .epb-catalog-note h3 { overflow-wrap: anywhere; font-size: var(--font-ui-small); }
 .epb-catalog-block { border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 10px; margin-block: 8px; }
+.epb-catalog-block h4 { margin-block: 0 8px; font-size: var(--font-ui-small); overflow-wrap: anywhere; }
 .epb-catalog-block p { margin-block: 6px; overflow-wrap: anywhere; }
 .epb-catalog-block code { display: block; overflow-wrap: anywhere; user-select: text; }
 .epb-catalog-block summary { cursor: pointer; color: var(--text-muted); }

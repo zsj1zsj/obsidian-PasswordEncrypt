@@ -8,6 +8,7 @@ export interface BlockRecord {
   line: number;
   endLine: number;
   ordinal: number;
+  title?: string;
   digest?: string;
   version?: 1 | 2;
   keyId?: string;
@@ -21,6 +22,7 @@ export interface IndexHost {
   configurationAvailable?(): boolean;
   scanFolders?(): readonly string[];
   paths(): string[];
+  hasFile?(path: string): boolean;
   read(path: string): Promise<string>;
   settings(): Pick<PasswordSettings, "storageMode" | "keys" | "legacyKeyId">;
   // Deliberately no password-value or decryption capability.
@@ -31,7 +33,7 @@ export async function inspectNote(path: string, text: string): Promise<NoteRecor
   const scan = scanPasswordBlocks(text, path);
   const blocks: BlockRecord[] = [];
   for (const block of scan.blocks) {
-    const record: BlockRecord = { path, line: block.line, endLine: block.endLine, ordinal: block.ordinal, digest: await hashText(block.source) };
+    const record: BlockRecord = { path, line: block.line, endLine: block.endLine, ordinal: block.ordinal, title: block.title, digest: await hashText(block.source) };
     try {
       const info = inspectEnvelope(block.source);
       record.version = info.version; record.keyId = info.keyId; record.parity = info.parity;
@@ -126,14 +128,32 @@ export class PasswordBlockIndex {
     for (const current of paths) this.queue(current, debounce);
     this.pump(); this.emit();
   }
+  /** File events already identify their target; avoid listing the vault or walking the catalog. */
+  changedFile(path: string, oldPath?: string, debounce = true): void {
+    if (!this.active || this.disposed) return;
+    let removed = oldPath !== undefined && this.forget(oldPath);
+    if (!/\.md$/i.test(path) || !isInScanFolders(path, this.host.scanFolders?.() ?? []) || this.host.hasFile?.(path) === false) {
+      removed = this.forget(path) || removed;
+      if (removed) this.emit();
+      return;
+    }
+    this.queue(path, debounce);
+    this.pump(); this.emit();
+  }
+  removeFile(path: string): void {
+    if (!this.active || this.disposed) return;
+    if (this.forget(path)) this.emit();
+  }
   remove(prefix: string): void {
     if (!this.active || this.disposed) return;
     for (const path of this.generations.keys()) if (inside(path, prefix)) this.forget(path);
     this.emit();
   }
-  private forget(path: string): void {
+  private forget(path: string): boolean {
+    const known = this.generations.has(path);
     clearTimeout(this.timers.get(path)); this.timers.delete(path); this.pending.delete(path);
     this.generations.delete(path); this.notes.delete(path);
+    return known;
   }
   private queue(path: string, debounce: boolean): void {
     const ticket = ++this.serial;
@@ -163,7 +183,7 @@ export class PasswordBlockIndex {
   async resolveJump(record: BlockRecord): Promise<{ path: string; line: number }> {
     const before = this.notes.get(record.path);
     const ticket = this.generations.get(record.path);
-    const fail = (): never => { this.changed(record.path, undefined, false); throw new Error("This block moved, changed, or is ambiguous. The catalog was refreshed; select the block again."); };
+    const fail = (): never => { this.changedFile(record.path, undefined, false); throw new Error("This block moved, changed, or is ambiguous. The catalog was refreshed; select the block again."); };
     if (this.disposed || !before || !before.blocks.includes(record) || ticket === undefined) return fail();
     let current: NoteRecord;
     try { current = await inspectNote(record.path, await this.host.read(record.path)); } catch { return fail(); }

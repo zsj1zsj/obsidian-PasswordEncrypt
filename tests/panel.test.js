@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { dom, load, until, tick } = require('./helpers');
 const { encryptSecret, rsEncode } = require('../codec.ts');
 const { PasswordBlockIndex } = load('block-index.ts');
-const wrap = value => `\`\`\`password\n${value}\n\`\`\`\n`;
+const wrap = (value, title = '') => `\`\`\`password${title ? ` ${title}` : ''}\n${value}\n\`\`\`\n`;
 
 (async () => {
   const cipher = await encryptSecret('synthetic-private-value', 'synthetic-master', 32, 'long-test-key-id', 100000);
@@ -10,7 +10,7 @@ const wrap = value => `\`\`\`password\n${value}\n\`\`\`\n`;
   const legacy = `EPB1.32.${Buffer.from(rsEncode(raw, 32)).toString('base64url')}`;
   const h = dom(); const { PasswordBlocksPanel } = load('panel.ts', h.obsidian);
   const root = h.document.createElement('div'); h.document.body.append(root);
-  const notes = new Map([['folder/a.md', wrap(cipher) + wrap(cipher)], ['legacy.md', wrap(legacy)], ['broken.md', wrap('bad')], ['unreadable.md', null]]);
+  const notes = new Map([['folder/a.md', wrap(cipher, 'Work account') + wrap(cipher, '<img src=x onerror=alert(1)>')], ['legacy.md', wrap(legacy)], ['broken.md', wrap('bad')], ['unreadable.md', null]]);
   const settings = { storageMode: 'secret-storage', keys: { 'long-test-key-id': { secretId: 'secret-id' } }, legacyKeyId: '' };
   let names = ['secret-id'], nameReads = 0;
   const index = new PasswordBlockIndex({ paths: () => [...notes.keys()],
@@ -35,6 +35,12 @@ const wrap = value => `\`\`\`password\n${value}\n\`\`\`\n`;
   const search = root.querySelector('input'); const filter = root.querySelector('select');
   const query = value => { search.value = value; search.dispatchEvent(new h.window.Event('input')); };
   const select = value => { filter.value = value; filter.dispatchEvent(new h.window.Event('change')); };
+  query('WORK ACCOUNT'); assert.equal(root.querySelectorAll('.epb-catalog-block').length, 1);
+  assert.equal(root.querySelector('.epb-catalog-block h4').textContent, 'Work account');
+  query('ONERROR'); assert.equal(root.querySelectorAll('.epb-catalog-block').length, 1);
+  assert.equal(root.querySelector('.epb-catalog-block h4').textContent, '<img src=x onerror=alert(1)>');
+  assert.equal(root.querySelector('img'), null, 'titles are plain text, never HTML');
+  query('Encrypted password'); assert.equal(root.querySelectorAll('.epb-catalog-block').length, 2);
   query('FOLDER'); assert.equal(root.querySelectorAll('.epb-catalog-block').length, 2);
   query('LONG-TEST-KEY'); assert.equal(root.querySelectorAll('.epb-catalog-block').length, 2);
   query('<script>'); assert.match(root.textContent, /No matching/); assert.equal(root.querySelector('script'), null);
@@ -60,6 +66,67 @@ const wrap = value => `\`\`\`password\n${value}\n\`\`\`\n`;
   panel.dispose(); const before = nameReads; root.dispatchEvent(new h.window.FocusEvent('focusin')); h.window.dispatchEvent(new h.window.Event('focus'));
   assert.equal(nameReads, before); assert.equal(root.childElementCount, 0);
   index.dispose(); h.instance.window.close();
+
+  // Background updates preserve semantic focus even when payloads are duplicates.
+  const focusDom = dom(); const FocusPanel = load('panel.ts', focusDom.obsidian).PasswordBlocksPanel;
+  const focusRoot = focusDom.document.createElement('div'); focusDom.document.body.append(focusRoot);
+  const outside = focusDom.document.createElement('button'); focusDom.document.body.append(outside);
+  let records = [1, 2, 3].map(ordinal => ({ path: 'focus.md', line: ordinal * 3, endLine: ordinal * 3 + 2, ordinal, digest: 'same-digest', version: 2, keyId: 'focus-key' }));
+  let indexListener;
+  const focusIndex = {
+    subscribe(listener) { indexListener = listener; return () => { indexListener = undefined; }; },
+    refreshStatuses() {},
+    snapshot: () => ({ notes: [{ path: 'focus.md', blocks: records }], active: true, busy: false, scanFolders: [] }),
+    status: record => ({ label: 'Password required', attention: false, keyId: record.keyId }),
+  };
+  let finishNavigation, navigationCount = 0;
+  const focusedPanel = new FocusPanel(focusRoot, focusIndex, async record => {
+    assert.ok(records.includes(record), 'navigation receives the latest index record');
+    navigationCount++;
+    await new Promise(resolve => { finishNavigation = resolve; });
+    outside.focus();
+  }, message => assert.fail(message));
+  const rows = () => [...focusRoot.querySelectorAll('.epb-catalog-block')];
+  const backgroundRender = async () => {
+    const before = rows()[0]; indexListener();
+    await until(() => rows()[0] !== before, 'background panel refresh');
+  };
+  rows()[1].querySelector('button').focus();
+  focusRoot.scrollTop = 120; focusRoot.querySelector('.epb-catalog-list').scrollTop = 40;
+  await backgroundRender();
+  assert.equal(focusDom.document.activeElement, rows()[1].querySelector('button'));
+  assert.equal(focusRoot.scrollTop, 120); assert.equal(focusRoot.querySelector('.epb-catalog-list').scrollTop, 40);
+  const details = rows()[1].querySelector('details'); details.open = true;
+  details.querySelector('summary').focus();
+  focusedPanel.render(); // Runs before the browser's queued native toggle event.
+  assert.equal(focusDom.document.activeElement, rows()[1].querySelector('summary'));
+  assert.equal(rows()[1].querySelector('details').open, true);
+  assert.equal(rows()[0].querySelector('details').open, false, 'duplicate payloads have separate expansion state');
+  await backgroundRender();
+  assert.equal(focusDom.document.activeElement, rows()[1].querySelector('summary'));
+  assert.equal(rows()[1].querySelector('details').open, true);
+  const focusSearch = focusRoot.querySelector('input'); focusSearch.focus(); await backgroundRender();
+  assert.equal(focusDom.document.activeElement, focusSearch);
+  outside.focus(); await backgroundRender(); assert.equal(focusDom.document.activeElement, outside);
+  // A replacement snapshot uses new objects and shifted lines with the same row identity.
+  rows()[1].querySelector('button').focus();
+  records = records.map(record => ({ ...record, line: record.line + 1, title: `Account ${record.ordinal}` }));
+  await backgroundRender();
+  assert.equal(focusDom.document.activeElement, rows()[1].querySelector('button'));
+  assert.match(focusDom.document.activeElement.getAttribute('aria-label'), /Account 2.*line 7/);
+  focusDom.document.activeElement.click(); assert.equal(navigationCount, 1);
+  await backgroundRender();
+  assert.equal(rows()[1].querySelector('button').disabled, true, 'refresh keeps pending navigation disabled');
+  rows()[1].querySelector('button').click(); assert.equal(navigationCount, 1);
+  finishNavigation(); await until(() => !rows()[1].querySelector('button').disabled);
+  assert.equal(focusDom.document.activeElement, outside, 'navigation completion owns focus');
+  await backgroundRender(); assert.equal(focusDom.document.activeElement, outside);
+  // Removing the focused row chooses the next available row, then search if empty.
+  rows()[1].querySelector('summary').focus();
+  records = records.filter(record => record.ordinal !== 2); await backgroundRender();
+  assert.equal(focusDom.document.activeElement, rows()[1].querySelector('summary'));
+  records = []; await backgroundRender(); assert.equal(focusDom.document.activeElement, focusSearch);
+  focusedPanel.dispose(); focusDom.instance.window.close();
 
   // Real plugin wiring: lazy activation, command/view reuse, events, settings, navigation, unload.
   const appDom = dom(); const Plugin = load('main.ts', appDom.obsidian).default;

@@ -23,18 +23,20 @@ const wrap = value => `\`\`\`password\n${value}\n\`\`\`\n`;
 
   const cipher = await encryptSecret('synthetic-secret', 'synthetic-master', 32, 'test-key', 100000);
   const files = new Map([['Accounts/a.md', wrap(cipher)], ['Accounts/sub/b.md', wrap(cipher)], ['Accounts2/c.md', wrap(cipher)], ['Other/d.md', wrap(cipher)], ['root.md', wrap(cipher)]]);
-  let folders = ['Accounts', 'Accounts/sub', 'Other']; const reads = [];
-  const host = { paths: () => [...files.keys()], read: async path => { reads.push(path); return files.get(path); }, scanFolders: () => folders,
+  let folders = ['Accounts', 'Accounts/sub', 'Other'], listings = 0; const reads = [];
+  const host = { paths: () => { listings++; return [...files.keys()]; }, hasFile: path => files.has(path), read: async path => { reads.push(path); return files.get(path); }, scanFolders: () => folders,
     settings: () => ({ storageMode: 'prompt', keys: {}, legacyKeyId: '' }), secretNames: () => { throw Error('No secret names needed'); } };
   const index = new PasswordBlockIndex(host, 10);
   index.refresh(); assert.equal(reads.length, 0); index.activate(); await idle(index);
   assert.deepEqual(reads.sort(), ['Accounts/a.md', 'Accounts/sub/b.md', 'Other/d.md']);
   assert.equal(index.snapshot().notes.length, 3, 'nested folders must not duplicate records');
-  index.changed('Accounts2/c.md', undefined, false); await idle(index); assert.equal(reads.length, 3);
+  const initialListings = listings;
+  index.changedFile('Accounts2/c.md', undefined, false); await idle(index); assert.equal(reads.length, 3);
   files.set('Accounts/new.md', files.get('Accounts2/c.md')); files.delete('Accounts2/c.md');
-  index.changed('Accounts/new.md', 'Accounts2/c.md', false); await idle(index); assert.equal(index.snapshot().notes.length, 4);
+  index.changedFile('Accounts/new.md', 'Accounts2/c.md', false); await idle(index); assert.equal(index.snapshot().notes.length, 4);
   files.set('Outside/new.md', files.get('Accounts/new.md')); files.delete('Accounts/new.md');
-  index.changed('Outside/new.md', 'Accounts/new.md', false); await idle(index); assert.equal(index.snapshot().notes.length, 3);
+  index.changedFile('Outside/new.md', 'Accounts/new.md', false); await idle(index); assert.equal(index.snapshot().notes.length, 3);
+  assert.equal(listings, initialListings, 'scope moves use direct file events without listing the vault');
   folders = ['Missing']; index.refresh(); await idle(index); assert.equal(index.snapshot().notes.length, 0);
   folders = []; index.refresh(); await idle(index); assert.equal(index.snapshot().notes.length, 5);
   const paths = host.paths; host.paths = () => { throw Error('listing failed'); };
@@ -44,20 +46,21 @@ const wrap = value => `\`\`\`password\n${value}\n\`\`\`\n`;
   let release; let pending = false;
   host.read = async path => { if (path === 'Accounts/a.md') { pending = true; return new Promise(resolve => { release = resolve; }); } return files.get(path); };
   folders = ['Accounts']; index.refresh(); await until(() => pending);
-  index.changed('Accounts/sub/b.md'); folders = ['Other']; index.refresh();
+  index.changedFile('Accounts/sub/b.md'); folders = ['Other']; index.refresh();
   release(wrap(cipher)); await idle(index); assert.deepEqual(index.snapshot().notes.map(n => n.path), ['Other/d.md']);
   files.set('Moved/d.md', files.get('Other/d.md')); files.delete('Other/d.md'); index.changed('Moved', 'Other', false); await idle(index);
   assert.equal(index.snapshot().notes.length, 0, 'configured paths remain literal after a folder rename'); index.dispose();
 
   // Settings UI, lazy activation, failed saves, reload, and whole-vault safety scan.
   const h = dom(); const Plugin = load('main.ts', h.obsidian).default; const plugin = new Plugin();
-  let disk = '{}', tab, failSave = false, saves = 0; const pluginReads = [];
+  let disk = '{}', tab, failSave = false, saves = 0, pluginListings = 0; const pluginReads = [];
   const notes = [{ path: 'Accounts/a.md', text: wrap(cipher) }, { path: 'Other/b.md', text: wrap(cipher) }];
   plugin.addSettingTab = setting => { tab = setting; };
   plugin.saveData = async value => { if (failSave) throw Error('disk failed'); disk = JSON.stringify(value); saves++; };
-  plugin.app = { vault: { ...vaultEvents(), adapter: { exists: async () => true, read: async () => disk }, getMarkdownFiles: () => notes,
+  plugin.app = { vault: { ...vaultEvents(), adapter: { exists: async () => true, read: async () => disk }, getMarkdownFiles: () => { pluginListings++; return notes; },
     getAllLoadedFiles: () => [{ path: '/', children: [] }, { path: 'Accounts', children: [] }, { path: 'Accounts/sub', children: [] }, { path: 'Accounts/sub/third', children: [] }, { path: 'Other', children: [] }, { path: 'Empty', children: [] }, { path: 'root.md' }, { path: 'Accounts/note.md' }],
     getFileByPath: path => notes.find(note => note.path === path), read: async file => { pluginReads.push(file.path); return file.text; } },
+    workspace: { on: () => ({}), detachLeavesOfType() {} },
     secretStorage: { listSecrets: () => [], getSecret: () => { throw Error('No master needed'); }, setSecret: () => { throw Error('No master needed'); } } };
   await plugin.onload(); tab.display();
   const timeout = tab.containerEl.querySelector('input[aria-label="Automatically hide plaintext"]');
@@ -98,7 +101,21 @@ const wrap = value => `\`\`\`password\n${value}\n\`\`\`\n`;
   await until(() => !plugin.isBusy); assert.deepEqual(plugin.settings.scanFolders, ['Accounts', 'Accounts/sub']);
   assert.equal(pluginReads.length, 0, 'saving scope must not activate the index');
   assert.deepEqual(JSON.parse(disk).scanFolders, ['Accounts', 'Accounts/sub']);
-  plugin.blockIndex.activate(); await idle(plugin.blockIndex); assert.deepEqual(pluginReads, ['Accounts/a.md']);
+  plugin.activateBlockIndex(); await idle(plugin.blockIndex); assert.deepEqual(pluginReads, ['Accounts/a.md']);
+  const beforeFileEvents = pluginListings;
+  for (let i = 0; i < 100; i++) plugin.app.vault.emit('modify', notes[0]);
+  await idle(plugin.blockIndex); assert.deepEqual(pluginReads, ['Accounts/a.md', 'Accounts/a.md']);
+  for (const event of ['create', 'modify', 'delete']) plugin.app.vault.emit(event, { path: 'Accounts/image.png' });
+  await idle(plugin.blockIndex); assert.equal(pluginReads.length, 2, 'attachment events must not read notes');
+  for (const nextPath of ['Outside/a.md', 'Accounts/a.md', 'Accounts/a.txt', 'Accounts/a.md']) {
+    const oldPath = notes[0].path; notes[0].path = nextPath;
+    plugin.app.vault.emit('rename', notes[0], oldPath); await idle(plugin.blockIndex);
+    assert.equal(plugin.blockIndex.snapshot().notes.length, nextPath === 'Accounts/a.md' ? 1 : 0);
+  }
+  const created = { path: 'Accounts/new.md', text: wrap(cipher) }; notes.push(created);
+  plugin.app.vault.emit('create', created); await idle(plugin.blockIndex); assert.equal(plugin.blockIndex.snapshot().notes.length, 2);
+  notes.pop(); plugin.app.vault.emit('delete', created); assert.equal(plugin.blockIndex.snapshot().notes.length, 1);
+  assert.equal(pluginListings, beforeFileEvents, 'all single-file vault events must avoid full-vault enumeration');
   const { PasswordBlocksPanel } = load('panel.ts', h.obsidian); const root = h.document.createElement('div');
   const panel = new PasswordBlocksPanel(root, plugin.blockIndex, async () => {}, () => {});
   assert.match(root.textContent, /Scan scope \(including subfolders\): Accounts, Accounts\/sub/);

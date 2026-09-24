@@ -24,6 +24,8 @@ export interface PasswordHost {
   save(): Promise<void>;
   prompt(title: string): Promise<string | null>;
   confirmSave(): Promise<boolean>;
+  // Authenticate against an existing encrypted block when upgrading a key without a check.
+  verifyExisting(keyId: string, master: string): Promise<void>;
 }
 
 export class PasswordManager {
@@ -32,6 +34,44 @@ export class PasswordManager {
   constructor(private host: PasswordHost) {}
   lock(): void { this.cache.clear(); this.epoch++; }
   private assertCurrent(epoch: number): void { if (this.epoch !== epoch) throw new Cancelled(); }
+  private async current<T>(epoch: number, operation: () => Promise<T>): Promise<T> {
+    this.assertCurrent(epoch);
+    try { return await operation(); }
+    finally { this.assertCurrent(epoch); }
+  }
+  private async verify(keyId: string, master: string, epoch: number): Promise<void> {
+    const check = this.host.settings.keyChecks[keyId];
+    if (check) {
+      await this.verifyCheck(check, master, epoch);
+    } else {
+      await this.current(epoch, () => this.host.verifyExisting(keyId, master));
+    }
+  }
+  private async verifyCheck(check: string, master: string, epoch: number): Promise<void> {
+    if (await this.current(epoch, () => decryptSecret(check, master)) !== CHECK_TEXT) {
+      throw new Error("Master password verification failed");
+    }
+  }
+  private async backfillCheck(keyId: string, master: string, epoch: number): Promise<void> {
+    const settings = this.host.settings;
+    const check = await this.current(epoch, () => encryptSecret(CHECK_TEXT, master, 32, keyId));
+    await this.current(epoch, () => this.host.ensureWritable());
+    // A concurrent operation may have installed a check while encryption was running.
+    if (settings.keyChecks[keyId]) {
+      await this.verify(keyId, master, epoch);
+      return;
+    }
+    this.assertCurrent(epoch);
+    settings.keyChecks[keyId] = check;
+    try { await this.host.save(); }
+    catch (error) {
+      // Undo only our failed write, even if the operation was cancelled while saving.
+      if (settings.keyChecks[keyId] === check) delete settings.keyChecks[keyId];
+      this.assertCurrent(epoch);
+      throw error;
+    }
+    this.assertCurrent(epoch);
+  }
   private stored(keyId: string): string | null {
     const ref = this.host.settings.keys[keyId];
     return ref ? this.host.getSecret(ref.secretId) : null;
@@ -104,31 +144,40 @@ export class PasswordManager {
   async active(): Promise<{ master: string; keyId: string }> {
     const settings = this.host.settings;
     const epoch = this.epoch;
-    await this.host.ensureWritable(); this.assertCurrent(epoch);
+    await this.current(epoch, () => this.host.ensureWritable());
+    const existingKey = !!settings.activeKeyId;
     const keyId = settings.activeKeyId || randomKeyId();
     let master = this.candidate(keyId);
-    const check = settings.keyChecks[keyId];
-    if (master && check) {
-      try { if (await decryptSecret(check, master) !== CHECK_TEXT) master = null; }
-      catch { master = null; }
+    if (master && existingKey) {
+      try { await this.verify(keyId, master, epoch); }
+      catch {
+        this.assertCurrent(epoch);
+        this.cache.delete(keyId);
+        master = null;
+      }
     }
     this.assertCurrent(epoch);
     const prompted = !master;
-    if (!master) master = await this.host.prompt("Enter the master password for this operation");
-    this.assertCurrent(epoch);
-    if (!master) throw new Cancelled();
-    if (check && await decryptSecret(check, master) !== CHECK_TEXT) throw new Error("Master password verification failed");
-    this.assertCurrent(epoch);
-    if (prompted && check && settings.storageMode === "secret-storage" && await this.host.confirmSave()) {
-      this.assertCurrent(epoch);
-      await this.bind(keyId, master);
-      this.assertCurrent(epoch);
+    if (!master) {
+      master = await this.current(epoch, () => this.host.prompt("Enter the master password for this operation"));
+      if (!master) throw new Cancelled();
+      if (existingKey) await this.verify(keyId, master, epoch);
     }
-    if (!settings.activeKeyId) {
-      await this.install(master, keyId);
+    this.assertCurrent(epoch);
+    if (existingKey && !settings.keyChecks[keyId]) await this.backfillCheck(keyId, master, epoch);
+    this.assertCurrent(epoch);
+    if (prompted && existingKey && settings.storageMode === "secret-storage" && await this.current(epoch, () => this.host.confirmSave())) {
+      await this.current(epoch, () => this.bind(keyId, master));
+    }
+    if (!existingKey) {
+      await this.current(epoch, () => this.install(master, keyId));
       this.assertCurrent(epoch);
       settings.activeKeyId = keyId;
-      try { await this.host.save(); } catch (error) { settings.activeKeyId = ""; throw error; }
+      try { await this.host.save(); } catch (error) {
+        settings.activeKeyId = "";
+        this.assertCurrent(epoch);
+        throw error;
+      }
     }
     this.assertCurrent(epoch);
     if (settings.storageMode === "session") this.cache.set(keyId, master);
@@ -140,13 +189,15 @@ export class PasswordManager {
     if (!check) throw new Error("Migration target password verification record is missing");
     let master = this.candidate(keyId);
     if (master) {
-      try { if (await decryptSecret(check, master) !== CHECK_TEXT) master = null; } catch { master = null; }
+      try { await this.verifyCheck(check, master, epoch); }
+      catch { this.assertCurrent(epoch); master = null; }
     }
     this.assertCurrent(epoch);
-    if (!master) master = await this.host.prompt("Enter the target master password to resume migration");
-    this.assertCurrent(epoch);
-    if (!master) throw new Cancelled();
-    if (await decryptSecret(check, master) !== CHECK_TEXT) throw new Error("Migration target password could not be verified");
+    if (!master) {
+      master = await this.current(epoch, () => this.host.prompt("Enter the target master password to resume migration"));
+      if (!master) throw new Cancelled();
+      await this.verifyCheck(check, master, epoch);
+    }
     this.assertCurrent(epoch);
     if (this.host.settings.storageMode === "session") this.cache.set(keyId, master);
     return master;

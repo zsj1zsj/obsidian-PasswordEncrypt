@@ -1,9 +1,10 @@
 import { App, Editor, MarkdownPostProcessorContext, MarkdownRenderChild, normalizePath, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { decryptSecret, encryptSecret, inspectEnvelope } from "./codec";
-import { Cancelled, PasswordManager, randomKeyId, StorageMode } from "./passwords";
+import { Cancelled, CHECK_TEXT, PasswordManager, randomKeyId, StorageMode } from "./passwords";
 import { findPasswordBlocks, hashText, MigrationTask, replacePayloads, scanPasswordBlocks, ScannedNote, validateTask, writeMigration } from "./rotation";
 import { choose, ProgressModal, promptValue, RevealController, ValueOptions } from "./ui";
 import { DEFAULT_BLOCK_TITLE, formatBlockTitle, normalizeBlockTitle, replaceBlockTitle } from "./block-title";
+import { BlockRenderCache } from "./block-render-cache";
 import { BlockRecord, PasswordBlockIndex } from "./block-index";
 import { PASSWORD_BLOCKS_VIEW, PasswordBlocksView } from "./panel";
 import { ConfigurationStore, ConfigState, defaults, EpbSettings } from "./config";
@@ -145,6 +146,7 @@ export default class EncryptPlugin extends Plugin {
   private operationAbort = new AbortController();
   private settingTab?: EpbSettingTab;
   private views = new Set<RevealController>();
+  private blockRenderCache = new BlockRenderCache();
   blockIndex!: PasswordBlockIndex;
   private indexEventsRegistered = false;
   private openingPanel?: Promise<void>;
@@ -154,6 +156,7 @@ export default class EncryptPlugin extends Plugin {
     this.blockIndex = new PasswordBlockIndex({
       paths: () => this.app.vault.getMarkdownFiles().map(file => file.path),
       read: path => this.app.vault.read(this.file(path)),
+      hasFile: path => this.app.vault.getFileByPath(path) != null,
       settings: () => this.settings,
       secretNames: () => this.app.secretStorage.listSecrets(),
       configurationAvailable: () => this.configurationState === "ready",
@@ -180,6 +183,7 @@ export default class EncryptPlugin extends Plugin {
       setSecret: (id, value) => { this.assertWritable(); this.app.secretStorage.setSecret(id, value); },
       save: () => this.saveSettings(),
       prompt: title => this.prompt(title),
+      verifyExisting: (keyId, master) => this.verifyExistingPassword(keyId, master),
       confirmSave: async () => await this.choose("Password verified", "The original password successfully decrypted this block. Save a new SecretStorage reference for this key? Existing secret entries will not be overwritten.", ["Use once", "Save recovered password"]) === "Save recovered password",
     });
   }
@@ -197,10 +201,10 @@ export default class EncryptPlugin extends Plugin {
     if (!this.indexEventsRegistered) {
       this.indexEventsRegistered = true;
       const vault = this.app.vault;
-      this.registerEvent(vault.on("create", file => this.blockIndex.changed(file.path, undefined, false)));
-      this.registerEvent(vault.on("modify", file => this.blockIndex.changed(file.path)));
-      this.registerEvent(vault.on("delete", file => this.blockIndex.remove(file.path)));
-      this.registerEvent(vault.on("rename", (file, oldPath) => this.blockIndex.changed(file.path, oldPath, false)));
+      this.registerEvent(vault.on("create", file => "children" in file ? this.blockIndex.changed(file.path, undefined, false) : this.blockIndex.changedFile(file.path, undefined, false)));
+      this.registerEvent(vault.on("modify", file => "children" in file ? this.blockIndex.changed(file.path) : this.blockIndex.changedFile(file.path)));
+      this.registerEvent(vault.on("delete", file => "children" in file ? this.blockIndex.remove(file.path) : this.blockIndex.removeFile(file.path)));
+      this.registerEvent(vault.on("rename", (file, oldPath) => "children" in file ? this.blockIndex.changed(file.path, oldPath, false) : this.blockIndex.changedFile(file.path, oldPath, false)));
       this.registerEvent(this.app.workspace.on("active-leaf-change", leaf => {
         if (leaf?.view.getViewType() === PASSWORD_BLOCKS_VIEW) this.blockIndex.refreshStatuses(false);
       }));
@@ -232,6 +236,7 @@ export default class EncryptPlugin extends Plugin {
   }
   lock(): void {
     this.operationEpoch++; this.passwords?.lock();
+    this.blockRenderCache.clear();
     this.operationAbort.abort(); this.operationAbort = new AbortController();
     for (const view of this.views) view.hide();
   }
@@ -298,14 +303,18 @@ export default class EncryptPlugin extends Plugin {
     if (!loaded) return;
     this.settings = loaded.settings;
     if (loaded.legacyMaster) {
+      const epoch = this.operationEpoch;
       try {
         await this.config.checkpoint();
-        if (this.stopped) throw new Cancelled();
+        this.assertRunning(epoch);
         const id = randomKeyId(); const secretId = `encrypt-password-blocks-${id}`;
+        const keyId = this.settings.legacyKeyId || id;
+        const check = await encryptSecret(CHECK_TEXT, loaded.legacyMaster, 32, keyId);
+        await this.config.checkpoint(); this.assertRunning(epoch);
         this.app.secretStorage.setSecret(secretId, loaded.legacyMaster);
         if (this.app.secretStorage.getSecret(secretId) !== loaded.legacyMaster) throw new Error("Legacy migration verification failed");
-        const keyId = this.settings.legacyKeyId || id;
         this.settings.keys[keyId] = { secretId, createdAt: Date.now() }; this.settings.legacyKeyId = keyId;
+        this.settings.keyChecks[keyId] = check;
         if (!this.settings.activeKeyId) this.settings.activeKeyId = keyId;
         await this.config.save(this.settings);
         new Notice("The legacy master password was migrated to SecretStorage.");
@@ -522,12 +531,46 @@ export default class EncryptPlugin extends Plugin {
       const plain = await decryptSecret(source, master); this.assertRunning(epoch); return plain;
     } finally { this.endOperation(); }
   }
-  private blockSection(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext) {
+  private async verifyExistingPassword(keyId: string, master: string): Promise<void> {
+    const epoch = this.operationEpoch;
+    await this.ensureWritable(epoch);
+    let matched = false;
+    let unreadable = false;
+    // Key verification is independent of the catalog's folder scope.
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      this.assertRunning(epoch);
+      let text: string;
+      try { text = await this.app.vault.read(file); }
+      catch { this.assertRunning(epoch); unreadable = true; continue; }
+      this.assertRunning(epoch);
+      for (const block of scanPasswordBlocks(text, file.path).blocks) {
+        let blockKey: string;
+        try {
+          const info = inspectEnvelope(block.source);
+          blockKey = info.keyId || (info.version === 1 ? this.settings.legacyKeyId : "");
+        } catch { continue; }
+        if (blockKey !== keyId) continue;
+        matched = true;
+        try { await decryptSecret(block.source, master); }
+        catch { this.assertRunning(epoch); continue; }
+        this.assertRunning(epoch);
+        return;
+      }
+    }
+    throw new Error(matched
+      ? "The master password could not decrypt an existing block for this key. Check the original password and try again."
+      : unreadable ? "Some notes could not be read, so this older key could not be verified. Restore access and try again."
+        : "No existing block is available to verify this older key. Use Change master password before inserting new blocks.");
+  }
+  private blockSection(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext, fresh = false) {
     const section = ctx.getSectionInfo(el);
     if (!section) return null;
-    const candidates = scanPasswordBlocks(section.text, ctx.sourcePath).blocks.filter(block =>
-      block.source === source.trim() && block.line - 1 >= section.lineStart && block.line - 1 <= section.lineEnd);
-    const block = candidates.length === 1 ? candidates[0] : undefined;
+    let block;
+    if (fresh) {
+      const candidates = scanPasswordBlocks(section.text, ctx.sourcePath).blocks.filter(candidate =>
+        candidate.source === source.trim() && candidate.line - 1 >= section.lineStart && candidate.line - 1 <= section.lineEnd);
+      block = candidates.length === 1 ? candidates[0] : undefined;
+    } else block = this.blockRenderCache.find(ctx.sourcePath, section.text, source, section.lineStart, section.lineEnd);
     return block ? { text: section.text, block } : null;
   }
   private async renameBlock(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext): Promise<string | null> {
@@ -536,7 +579,7 @@ export default class EncryptPlugin extends Plugin {
     this.activeOperations++;
     try {
       await this.ensureWritable(epoch);
-      const section = this.blockSection(source, el, ctx);
+      const section = this.blockSection(source, el, ctx, true);
       if (!section) throw new Error("Cannot locate this block safely. Reopen the note and try again.");
       const file = this.file(ctx.sourcePath);
       const path = file.path;

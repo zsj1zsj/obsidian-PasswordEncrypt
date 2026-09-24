@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { dom, load, until, tick, vaultEvents } = require('./helpers');
 const { encryptSecret, decryptSecret } = require('../codec.ts');
 const { findPasswordBlocks } = load('rotation.ts');
+const { CHECK_TEXT } = load('passwords.ts');
 
 const settings = {
   storageMode: 'secret-storage', activeKeyId: 'block-key', legacyKeyId: 'block-key',
@@ -94,6 +95,7 @@ async function finishRename(f, modal, value) {
 
 (async () => {
   const cipher = await encryptSecret('SYNTHETIC-BLOCK-SECRET', 'synthetic-master', 32, 'block-key', 100000);
+  settings.keyChecks = { 'block-key': await encryptSecret(CHECK_TEXT, 'synthetic-master', 32, 'block-key', 100000) };
 
   // Inserting exposes an editable default title without changing password input handling.
   for (const customTitle of [null, 'Work account']) {
